@@ -17,9 +17,25 @@ if (!ABLY_API_KEY) {
 // Inicializar Ably
 const ably = new Ably.Rest({ key: ABLY_API_KEY })
 
+// Configurar origens permitidas para CORS
+const allowedOrigins = [
+  'http://localhost:3000',
+  'https://colab-canvas.vercel.app',
+  process.env.CORS_ORIGIN,
+].filter(Boolean)
+
 // Middlewares
 app.use(cors({
-  origin: process.env.CORS_ORIGIN || 'http://localhost:3000',
+  origin: (origin, callback) => {
+    // Permitir requisições sem origin (mobile apps, Postman, etc)
+    if (!origin) return callback(null, true)
+
+    if (allowedOrigins.includes(origin)) {
+      callback(null, true)
+    } else {
+      callback(new Error('Not allowed by CORS'))
+    }
+  },
   credentials: true,
 }))
 app.use(express.json({ limit: '50mb' }))

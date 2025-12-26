@@ -191,7 +191,7 @@ const Canvas = () => {
     ctx.beginPath()
     ctx.moveTo(x1, y1)
     ctx.lineTo(x2, y2)
-    
+
     if (eraser) {
       ctx.globalCompositeOperation = 'destination-out'
       ctx.strokeStyle = 'rgba(0,0,0,1)'
@@ -199,11 +199,11 @@ const Canvas = () => {
       ctx.globalCompositeOperation = 'source-over'
       ctx.strokeStyle = strokeColor
     }
-    
+
     ctx.lineWidth = strokeWidth
     ctx.lineCap = 'round'
     ctx.stroke()
-    
+
     // Resetar para modo normal
     ctx.globalCompositeOperation = 'source-over'
   }
@@ -331,21 +331,19 @@ const Canvas = () => {
           <div className="flex items-center gap-2">
             <button
               onClick={() => setIsEraser(false)}
-              className={`px-4 py-2 rounded-lg font-medium transition-all ${
-                !isEraser
+              className={`px-4 py-2 rounded-lg font-medium transition-all ${!isEraser
                   ? 'bg-blue-500 text-white shadow-md'
                   : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
-              }`}
+                }`}
             >
               ✏️ Pincel
             </button>
             <button
               onClick={() => setIsEraser(true)}
-              className={`px-4 py-2 rounded-lg font-medium transition-all ${
-                isEraser
+              className={`px-4 py-2 rounded-lg font-medium transition-all ${isEraser
                   ? 'bg-blue-500 text-white shadow-md'
                   : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
-              }`}
+                }`}
             >
               ⬜ Borracha
             </button>
