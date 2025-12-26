@@ -34,6 +34,13 @@ const Canvas = () => {
   const pixelBatchRef = useRef<DrawData[]>([])
   const batchTimerRef = useRef<NodeJS.Timeout | null>(null)
   const drawnPixelsRef = useRef<Set<string>>(new Set())
+  
+  // Estados para pan e zoom
+  const [offset, setOffset] = useState({ x: 0, y: 0 })
+  const [scale, setScale] = useState(1)
+  const [isPanning, setIsPanning] = useState(false)
+  const panStartRef = useRef({ x: 0, y: 0 })
+  const lastTouchDistance = useRef<number | null>(null)
 
   // Ajustar tamanho do canvas para tela cheia
   useEffect(() => {
@@ -55,7 +62,7 @@ const Canvas = () => {
     if (canvasSize.width > 0 && canvasSize.height > 0) {
       drawGrid()
     }
-  }, [canvasSize])
+  }, [canvasSize, offset, scale])
 
   // Enviar batch de pixels agrupados
   const sendPixelBatch = () => {
@@ -231,24 +238,38 @@ const Canvas = () => {
     const ctx = canvas.getContext('2d')
     if (!ctx) return
 
+    ctx.save()
+    ctx.setTransform(1, 0, 0, 1, 0, 0)
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
+    ctx.translate(offset.x, offset.y)
+    ctx.scale(scale, scale)
+
     ctx.strokeStyle = 'rgba(200, 200, 200, 0.2)'
-    ctx.lineWidth = 0.5
+    ctx.lineWidth = 0.5 / scale
+
+    const gridSize = 5000 // Grid grande para cobrir área navegável
+    const startX = Math.floor(-offset.x / scale / pixelSize) * pixelSize
+    const startY = Math.floor(-offset.y / scale / pixelSize) * pixelSize
+    const endX = Math.ceil((canvas.width - offset.x) / scale / pixelSize) * pixelSize
+    const endY = Math.ceil((canvas.height - offset.y) / scale / pixelSize) * pixelSize
 
     // Linhas verticais
-    for (let x = 0; x <= canvas.width; x += pixelSize) {
+    for (let x = startX; x <= endX; x += pixelSize) {
       ctx.beginPath()
-      ctx.moveTo(x, 0)
-      ctx.lineTo(x, canvas.height)
+      ctx.moveTo(x, startY)
+      ctx.lineTo(x, endY)
       ctx.stroke()
     }
 
     // Linhas horizontais
-    for (let y = 0; y <= canvas.height; y += pixelSize) {
+    for (let y = startY; y <= endY; y += pixelSize) {
       ctx.beginPath()
-      ctx.moveTo(0, y)
-      ctx.lineTo(canvas.width, y)
+      ctx.moveTo(startX, y)
+      ctx.lineTo(endX, y)
       ctx.stroke()
     }
+
+    ctx.restore()
   }
 
   const drawPixel = (
@@ -267,16 +288,22 @@ const Canvas = () => {
     const pixelX = Math.floor(x / pixelSize) * pixelSize
     const pixelY = Math.floor(y / pixelSize) * pixelSize
 
+    ctx.save()
+    ctx.translate(offset.x, offset.y)
+    ctx.scale(scale, scale)
+
     if (eraser) {
       ctx.clearRect(pixelX, pixelY, pixelSize, pixelSize)
       // Redesenhar grid no pixel apagado
       ctx.strokeStyle = 'rgba(200, 200, 200, 0.2)'
-      ctx.lineWidth = 0.5
+      ctx.lineWidth = 0.5 / scale
       ctx.strokeRect(pixelX, pixelY, pixelSize, pixelSize)
     } else {
       ctx.fillStyle = pixelColor
       ctx.fillRect(pixelX, pixelY, pixelSize, pixelSize)
     }
+
+    ctx.restore()
   }
 
   const startDrawing = (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -285,8 +312,12 @@ const Canvas = () => {
     if (!canvas) return
 
     const rect = canvas.getBoundingClientRect()
-    const x = e.clientX - rect.left
-    const y = e.clientY - rect.top
+    const clientX = e.clientX - rect.left
+    const clientY = e.clientY - rect.top
+    
+    // Converter coordenadas do canvas para coordenadas do mundo
+    const x = (clientX - offset.x) / scale
+    const y = (clientY - offset.y) / scale
 
     // Desenhar pixel imediatamente ao clicar
     drawPixel(x, y, color, isEraser)
@@ -307,8 +338,12 @@ const Canvas = () => {
     if (!canvas) return
 
     const rect = canvas.getBoundingClientRect()
-    const x = e.clientX - rect.left
-    const y = e.clientY - rect.top
+    const clientX = e.clientX - rect.left
+    const clientY = e.clientY - rect.top
+    
+    // Converter coordenadas do canvas para coordenadas do mundo
+    const x = (clientX - offset.x) / scale
+    const y = (clientY - offset.y) / scale
 
     drawPixel(x, y, color, isEraser)
 
@@ -323,6 +358,7 @@ const Canvas = () => {
 
   const stopDrawing = () => {
     setIsDrawing(false)
+    setIsPanning(false)
     // Enviar último batch imediatamente
     if (batchTimerRef.current) {
       clearTimeout(batchTimerRef.current)
@@ -332,6 +368,142 @@ const Canvas = () => {
     debouncedSave()
   }
 
+  // Touch handlers
+  const handleTouchStart = (e: React.TouchEvent<HTMLCanvasElement>) => {
+    e.preventDefault()
+    const canvas = canvasRef.current
+    if (!canvas) return
+
+    if (e.touches.length === 1) {
+      // Um dedo - desenhar
+      const touch = e.touches[0]
+      const rect = canvas.getBoundingClientRect()
+      const clientX = touch.clientX - rect.left
+      const clientY = touch.clientY - rect.top
+      
+      const x = (clientX - offset.x) / scale
+      const y = (clientY - offset.y) / scale
+
+      setIsDrawing(true)
+      drawPixel(x, y, color, isEraser)
+
+      const pixelKey = `${Math.floor(x / pixelSize)},${Math.floor(y / pixelSize)}`
+      if (!drawnPixelsRef.current.has(pixelKey)) {
+        pixelBatchRef.current.push({ x, y, color, userId, isEraser })
+        drawnPixelsRef.current.add(pixelKey)
+        scheduleBatchSend()
+      }
+    } else if (e.touches.length === 2) {
+      // Dois dedos - preparar para zoom/pan
+      setIsDrawing(false)
+      setIsPanning(true)
+      const touch1 = e.touches[0]
+      const touch2 = e.touches[1]
+      const distance = Math.hypot(
+        touch2.clientX - touch1.clientX,
+        touch2.clientY - touch1.clientY
+      )
+      lastTouchDistance.current = distance
+      
+      panStartRef.current = {
+        x: (touch1.clientX + touch2.clientX) / 2,
+        y: (touch1.clientY + touch2.clientY) / 2
+      }
+    }
+  }
+
+  const handleTouchMove = (e: React.TouchEvent<HTMLCanvasElement>) => {
+    e.preventDefault()
+    const canvas = canvasRef.current
+    if (!canvas) return
+
+    if (e.touches.length === 1 && isDrawing && !isPanning) {
+      // Um dedo - desenhar
+      const touch = e.touches[0]
+      const rect = canvas.getBoundingClientRect()
+      const clientX = touch.clientX - rect.left
+      const clientY = touch.clientY - rect.top
+      
+      const x = (clientX - offset.x) / scale
+      const y = (clientY - offset.y) / scale
+
+      drawPixel(x, y, color, isEraser)
+
+      const pixelKey = `${Math.floor(x / pixelSize)},${Math.floor(y / pixelSize)}`
+      if (!drawnPixelsRef.current.has(pixelKey)) {
+        pixelBatchRef.current.push({ x, y, color, userId, isEraser })
+        drawnPixelsRef.current.add(pixelKey)
+        scheduleBatchSend()
+      }
+    } else if (e.touches.length === 2) {
+      // Dois dedos - zoom e pan
+      const touch1 = e.touches[0]
+      const touch2 = e.touches[1]
+      
+      // Zoom
+      const distance = Math.hypot(
+        touch2.clientX - touch1.clientX,
+        touch2.clientY - touch1.clientY
+      )
+      
+      if (lastTouchDistance.current) {
+        const delta = distance - lastTouchDistance.current
+        const newScale = Math.max(0.5, Math.min(5, scale + delta * 0.01))
+        setScale(newScale)
+      }
+      lastTouchDistance.current = distance
+      
+      // Pan
+      const centerX = (touch1.clientX + touch2.clientX) / 2
+      const centerY = (touch1.clientY + touch2.clientY) / 2
+      
+      const dx = centerX - panStartRef.current.x
+      const dy = centerY - panStartRef.current.y
+      
+      setOffset(prev => ({
+        x: prev.x + dx,
+        y: prev.y + dy
+      }))
+      
+      panStartRef.current = { x: centerX, y: centerY }
+    }
+  }
+
+  const handleTouchEnd = (e: React.TouchEvent<HTMLCanvasElement>) => {
+    e.preventDefault()
+    if (e.touches.length === 0) {
+      stopDrawing()
+      lastTouchDistance.current = null
+    } else if (e.touches.length === 1) {
+      lastTouchDistance.current = null
+      setIsPanning(false)
+    }
+  }
+
+  // Mouse wheel para zoom
+  const handleWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
+    e.preventDefault()
+    const canvas = canvasRef.current
+    if (!canvas) return
+
+    const rect = canvas.getBoundingClientRect()
+    const mouseX = e.clientX - rect.left
+    const mouseY = e.clientY - rect.top
+
+    const delta = e.deltaY > 0 ? 0.9 : 1.1
+    const newScale = Math.max(0.5, Math.min(5, scale * delta))
+
+    // Ajustar offset para zoom centrado no mouse
+    const worldX = (mouseX - offset.x) / scale
+    const worldY = (mouseY - offset.y) / scale
+
+    setOffset({
+      x: mouseX - worldX * newScale,
+      y: mouseY - worldY * newScale
+    })
+    setScale(newScale)
+  }
+
   const clearCanvas = () => {
     const canvas = canvasRef.current
     if (!canvas) return
@@ -339,7 +511,10 @@ const Canvas = () => {
     const ctx = canvas.getContext('2d')
     if (!ctx) return
 
+    ctx.save()
+    ctx.setTransform(1, 0, 0, 1, 0, 0)
     ctx.clearRect(0, 0, canvas.width, canvas.height)
+    ctx.restore()
     drawGrid()
   }
 
@@ -378,21 +553,25 @@ const Canvas = () => {
         onMouseMove={draw}
         onMouseUp={stopDrawing}
         onMouseLeave={stopDrawing}
-        className="absolute inset-0 w-full h-full bg-white cursor-crosshair"
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+        onWheel={handleWheel}
+        className="absolute inset-0 w-full h-full bg-white cursor-crosshair touch-none"
       />
 
       {/* Controles flutuantes na parte inferior */}
-      <div className="absolute bottom-8 left-1/2 transform -translate-x-1/2 z-10">
-        <div className="flex items-center gap-4 px-6 py-4 bg-white dark:bg-gray-900 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 backdrop-blur-sm bg-opacity-95">
-          <div className="flex items-center gap-3">
-            <label className="font-medium text-sm">
+      <div className="absolute bottom-4 md:bottom-8 left-1/2 transform -translate-x-1/2 z-10 max-w-[95vw]">
+        <div className="flex flex-col md:flex-row items-center gap-2 md:gap-4 px-3 md:px-6 py-3 md:py-4 bg-white dark:bg-gray-900 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 backdrop-blur-sm bg-opacity-95">
+          <div className="flex items-center gap-2 md:gap-3 w-full md:w-auto justify-center">
+            <label className="font-medium text-xs md:text-sm">
               Cor:
             </label>
             <input
               type="color"
               value={color}
               onChange={(e) => handleColorChange(e.target.value)}
-              className="w-10 h-10 cursor-pointer rounded-lg border-2 border-gray-300"
+              className="w-8 h-8 md:w-10 md:h-10 cursor-pointer rounded-lg border-2 border-gray-300"
             />
             {/* Histórico de cores */}
             <div className="flex gap-1">
@@ -400,7 +579,7 @@ const Canvas = () => {
                 <button
                   key={index}
                   onClick={() => handleColorChange(histColor)}
-                  className={`w-8 h-8 rounded-md border-2 transition-all hover:scale-110 ${color === histColor && !isEraser
+                  className={`w-7 h-7 md:w-8 md:h-8 rounded-md border-2 transition-all hover:scale-110 ${color === histColor && !isEraser
                     ? 'border-blue-500 ring-2 ring-blue-300'
                     : 'border-gray-300'
                     }`}
@@ -411,12 +590,12 @@ const Canvas = () => {
             </div>
           </div>
 
-          <div className="h-8 w-px bg-gray-300 dark:bg-gray-600" />
+          <div className="hidden md:block h-8 w-px bg-gray-300 dark:bg-gray-600" />
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 w-full md:w-auto justify-center">
             <button
               onClick={() => setIsEraser(false)}
-              className={`px-4 py-2 rounded-lg font-medium transition-all ${!isEraser
+              className={`px-3 md:px-4 py-2 rounded-lg font-medium text-xs md:text-base transition-all ${!isEraser
                 ? 'bg-blue-500 text-white shadow-md'
                 : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
                 }`}
@@ -425,7 +604,7 @@ const Canvas = () => {
             </button>
             <button
               onClick={() => setIsEraser(true)}
-              className={`px-4 py-2 rounded-lg font-medium transition-all ${isEraser
+              className={`px-3 md:px-4 py-2 rounded-lg font-medium text-xs md:text-base transition-all ${isEraser
                 ? 'bg-blue-500 text-white shadow-md'
                 : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
                 }`}
@@ -434,12 +613,12 @@ const Canvas = () => {
             </button>
           </div>
 
-          <div className="h-8 w-px bg-gray-300 dark:bg-gray-600" />
+          <div className="hidden md:block h-8 w-px bg-gray-300 dark:bg-gray-600" />
 
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-3 md:gap-4 w-full md:w-auto justify-center">
             <div className="flex items-center gap-2">
               <div
-                className={`w-2.5 h-2.5 rounded-full ${connected ? 'bg-green-500' : 'bg-red-500'
+                className={`w-2 h-2 md:w-2.5 md:h-2.5 rounded-full ${connected ? 'bg-green-500' : 'bg-red-500'
                   }`}
               />
               <span className="text-xs font-medium">
@@ -448,6 +627,9 @@ const Canvas = () => {
             </div>
             <span className="text-xs font-medium">
               👥 {userCount}
+            </span>
+            <span className="text-xs font-medium hidden md:inline">
+              🔍 {scale.toFixed(1)}x
             </span>
           </div>
         </div>
