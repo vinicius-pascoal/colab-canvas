@@ -51,9 +51,11 @@ app.get('/health', (req: Request, res: Response) => {
 // Endpoint para salvar o estado do canvas usando Ably
 app.post('/canvas/save', async (req: Request, res: Response) => {
   try {
+    console.log('🔵 Recebendo requisição para salvar canvas...')
     const { canvasData } = req.body
 
     if (!canvasData) {
+      console.error('❌ canvasData não fornecido')
       return res.status(400).json({ error: 'canvasData é obrigatório' })
     }
 
@@ -64,7 +66,7 @@ app.post('/canvas/save', async (req: Request, res: Response) => {
     console.log('✅ Estado do canvas salvo no Ably')
     res.json({ success: true, timestamp: new Date().toISOString() })
   } catch (error) {
-    console.error('Erro ao salvar canvas:', error)
+    console.error('❌ Erro ao salvar canvas:', error)
     res.status(500).json({ error: 'Erro ao salvar canvas' })
   }
 })
@@ -72,21 +74,24 @@ app.post('/canvas/save', async (req: Request, res: Response) => {
 // Endpoint para carregar o estado do canvas usando Ably
 app.get('/canvas/load', async (req: Request, res: Response) => {
   try {
+    console.log('🔵 Recebendo requisição para carregar canvas...')
     // Buscar histórico do canal Ably
     const channel = ably.channels.get(CANVAS_STATE_CHANNEL)
     const history = await channel.history({ limit: 1 })
 
     if (history.items.length > 0) {
       const latestState = history.items[0].data
+      console.log('✅ Canvas carregado do histórico Ably')
       res.json({
         canvasData: latestState.canvasData,
         timestamp: latestState.timestamp
       })
     } else {
+      console.log('ℹ️ Nenhum estado salvo encontrado')
       res.json({ canvasData: null, timestamp: new Date().toISOString() })
     }
   } catch (error) {
-    console.error('Erro ao carregar canvas:', error)
+    console.error('❌ Erro ao carregar canvas:', error)
     res.json({ canvasData: null, timestamp: new Date().toISOString() })
   }
 })

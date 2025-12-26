@@ -131,9 +131,11 @@ const Canvas = () => {
 
   const loadCanvasState = async () => {
     try {
+      console.log('📥 Carregando canvas do servidor...')
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'
       const response = await fetch(`${apiUrl}/canvas/load`)
       const data = await response.json()
+      console.log('✅ Canvas carregado:', data.canvasData ? 'com dados' : 'vazio')
       if (data.canvasData) {
         const canvas = canvasRef.current
         if (!canvas) return
@@ -146,11 +148,12 @@ const Canvas = () => {
           ctx.drawImage(img, 0, 0)
           ctx.restore()
           redrawCanvas()
+          console.log('🎨 Imagem carregada e redesenhada')
         }
         img.src = data.canvasData
       }
     } catch (error) {
-      console.error('Erro ao carregar canvas:', error)
+      console.error('❌ Erro ao carregar canvas:', error)
     }
   }
 
@@ -158,20 +161,23 @@ const Canvas = () => {
     const canvas = canvasRef.current
     if (!canvas) return
     try {
+      console.log('🔄 Salvando canvas...')
       const canvasData = canvas.toDataURL('image/png')
       const apiUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001'
-      await fetch(`${apiUrl}/canvas/save`, {
+      const response = await fetch(`${apiUrl}/canvas/save`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ canvasData }),
       })
+      console.log('✅ Canvas salvo com sucesso:', response.status)
     } catch (error) {
-      console.error('Erro ao salvar canvas:', error)
+      console.error('❌ Erro ao salvar canvas:', error)
     }
   }
 
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const debouncedSave = () => {
+    console.log('⏰ Agendando salvamento do canvas em 2s...')
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current)
     saveTimeoutRef.current = setTimeout(() => {
       saveCanvasState()
@@ -195,12 +201,14 @@ const Canvas = () => {
     channelRef.current = channel
     channel.subscribe('draw', (message: any) => {
       const data = message.data as DrawData
+      console.log('📨 Recebeu evento draw:', data)
       if (data.userId !== userId) {
         drawPixel(data.x, data.y, data.color, data.isEraser || false)
       }
     })
     channel.subscribe('pixel-batch', (message: any) => {
       const batch = message.data as PixelBatch
+      console.log('📦 Recebeu evento pixel-batch:', batch.pixels.length, 'pixels')
       if (batch.userId !== userId) {
         batch.pixels.forEach((p: DrawData) => {
           drawPixel(p.x, p.y, p.color, p.isEraser || false)
@@ -208,6 +216,7 @@ const Canvas = () => {
       }
     })
     channel.subscribe('clear', (message: any) => {
+      console.log('🗑️ Recebeu evento clear')
       if (message.data.userId !== userId) {
         clearCanvas()
       }
@@ -232,6 +241,7 @@ const Canvas = () => {
 
   const sendPixelBatch = () => {
     if (pixelBatchRef.current.length === 0) return
+    console.log('📤 Enviando batch com', pixelBatchRef.current.length, 'pixels')
     if (channelRef.current) {
       channelRef.current.publish('pixel-batch', { pixels: pixelBatchRef.current, userId })
     }
