@@ -34,7 +34,10 @@ const Canvas = () => {
   const pixelBatchRef = useRef<DrawData[]>([])
   const batchTimerRef = useRef<NodeJS.Timeout | null>(null)
   const drawnPixelsRef = useRef<Set<string>>(new Set())
-  
+
+  // Histórico permanente de todos os pixels desenhados
+  const pixelHistoryRef = useRef<Map<string, DrawData>>(new Map())
+
   // Estados para pan e zoom
   const [offset, setOffset] = useState({ x: 0, y: 0 })
   const [scale, setScale] = useState(1)
@@ -63,6 +66,36 @@ const Canvas = () => {
       drawGrid()
     }
   }, [canvasSize, offset, scale])
+
+  // Adicionar wheel listener com passive: false
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+
+    const handleWheelEvent = (e: WheelEvent) => {
+      e.preventDefault()
+
+      const rect = canvas.getBoundingClientRect()
+      const mouseX = e.clientX - rect.left
+      const mouseY = e.clientY - rect.top
+
+      const delta = e.deltaY > 0 ? 0.9 : 1.1
+      const newScale = Math.max(0.5, Math.min(5, scale * delta))
+
+      // Ajustar offset para zoom centrado no mouse
+      const worldX = (mouseX - offset.x) / scale
+      const worldY = (mouseY - offset.y) / scale
+
+      setOffset({
+        x: mouseX - worldX * newScale,
+        y: mouseY - worldY * newScale
+      })
+      setScale(newScale)
+    }
+
+    canvas.addEventListener('wheel', handleWheelEvent, { passive: false })
+    return () => canvas.removeEventListener('wheel', handleWheelEvent)
+  }, [scale, offset])
 
   // Enviar batch de pixels agrupados
   const sendPixelBatch = () => {
@@ -106,8 +139,14 @@ const Canvas = () => {
 
         const img = new Image()
         img.onload = () => {
+          // Desenhar imagem carregada
+          ctx.save()
+          ctx.setTransform(1, 0, 0, 1, 0, 0)
           ctx.drawImage(img, 0, 0)
-          drawGrid()
+          ctx.restore()
+
+          // Nota: O histórico de pixels será reconstruído gradualmente conforme usuários desenham
+          redrawCanvas()
           console.log('✅ Estado do canvas carregado')
         }
         img.src = data.canvasData
@@ -230,24 +269,29 @@ const Canvas = () => {
     }
   }, [userId])
 
-  // Desenhar grid de fundo
-  const drawGrid = () => {
+  // Redesenhar tudo (grid + todos os pixels)
+  const redrawCanvas = () => {
     const canvas = canvasRef.current
     if (!canvas) return
 
     const ctx = canvas.getContext('2d')
     if (!ctx) return
 
+    // Limpar canvas
     ctx.save()
     ctx.setTransform(1, 0, 0, 1, 0, 0)
     ctx.clearRect(0, 0, canvas.width, canvas.height)
+    ctx.restore()
+
+    // Aplicar transformações
+    ctx.save()
     ctx.translate(offset.x, offset.y)
     ctx.scale(scale, scale)
 
+    // Desenhar grid
     ctx.strokeStyle = 'rgba(200, 200, 200, 0.2)'
     ctx.lineWidth = 0.5 / scale
 
-    const gridSize = 5000 // Grid grande para cobrir área navegável
     const startX = Math.floor(-offset.x / scale / pixelSize) * pixelSize
     const startY = Math.floor(-offset.y / scale / pixelSize) * pixelSize
     const endX = Math.ceil((canvas.width - offset.x) / scale / pixelSize) * pixelSize
@@ -269,7 +313,23 @@ const Canvas = () => {
       ctx.stroke()
     }
 
+    // Redesenhar todos os pixels do histórico
+    pixelHistoryRef.current.forEach((pixelData) => {
+      const pixelX = Math.floor(pixelData.x / pixelSize) * pixelSize
+      const pixelY = Math.floor(pixelData.y / pixelSize) * pixelSize
+
+      if (!pixelData.isEraser) {
+        ctx.fillStyle = pixelData.color
+        ctx.fillRect(pixelX, pixelY, pixelSize, pixelSize)
+      }
+    })
+
     ctx.restore()
+  }
+
+  // Função auxiliar para compatibilidade
+  const drawGrid = () => {
+    redrawCanvas()
   }
 
   const drawPixel = (
@@ -287,7 +347,22 @@ const Canvas = () => {
     // Calcular posição do pixel no grid
     const pixelX = Math.floor(x / pixelSize) * pixelSize
     const pixelY = Math.floor(y / pixelSize) * pixelSize
+    const pixelKey = `${pixelX},${pixelY}`
 
+    // Atualizar histórico
+    if (eraser) {
+      pixelHistoryRef.current.delete(pixelKey)
+    } else {
+      pixelHistoryRef.current.set(pixelKey, {
+        x: pixelX,
+        y: pixelY,
+        color: pixelColor,
+        userId,
+        isEraser: false
+      })
+    }
+
+    // Redesenhar imediatamente
     ctx.save()
     ctx.translate(offset.x, offset.y)
     ctx.scale(scale, scale)
@@ -314,7 +389,7 @@ const Canvas = () => {
     const rect = canvas.getBoundingClientRect()
     const clientX = e.clientX - rect.left
     const clientY = e.clientY - rect.top
-    
+
     // Converter coordenadas do canvas para coordenadas do mundo
     const x = (clientX - offset.x) / scale
     const y = (clientY - offset.y) / scale
@@ -340,7 +415,7 @@ const Canvas = () => {
     const rect = canvas.getBoundingClientRect()
     const clientX = e.clientX - rect.left
     const clientY = e.clientY - rect.top
-    
+
     // Converter coordenadas do canvas para coordenadas do mundo
     const x = (clientX - offset.x) / scale
     const y = (clientY - offset.y) / scale
@@ -380,7 +455,7 @@ const Canvas = () => {
       const rect = canvas.getBoundingClientRect()
       const clientX = touch.clientX - rect.left
       const clientY = touch.clientY - rect.top
-      
+
       const x = (clientX - offset.x) / scale
       const y = (clientY - offset.y) / scale
 
@@ -404,7 +479,7 @@ const Canvas = () => {
         touch2.clientY - touch1.clientY
       )
       lastTouchDistance.current = distance
-      
+
       panStartRef.current = {
         x: (touch1.clientX + touch2.clientX) / 2,
         y: (touch1.clientY + touch2.clientY) / 2
@@ -423,7 +498,7 @@ const Canvas = () => {
       const rect = canvas.getBoundingClientRect()
       const clientX = touch.clientX - rect.left
       const clientY = touch.clientY - rect.top
-      
+
       const x = (clientX - offset.x) / scale
       const y = (clientY - offset.y) / scale
 
@@ -439,32 +514,32 @@ const Canvas = () => {
       // Dois dedos - zoom e pan
       const touch1 = e.touches[0]
       const touch2 = e.touches[1]
-      
+
       // Zoom
       const distance = Math.hypot(
         touch2.clientX - touch1.clientX,
         touch2.clientY - touch1.clientY
       )
-      
+
       if (lastTouchDistance.current) {
         const delta = distance - lastTouchDistance.current
         const newScale = Math.max(0.5, Math.min(5, scale + delta * 0.01))
         setScale(newScale)
       }
       lastTouchDistance.current = distance
-      
+
       // Pan
       const centerX = (touch1.clientX + touch2.clientX) / 2
       const centerY = (touch1.clientY + touch2.clientY) / 2
-      
+
       const dx = centerX - panStartRef.current.x
       const dy = centerY - panStartRef.current.y
-      
+
       setOffset(prev => ({
         x: prev.x + dx,
         y: prev.y + dy
       }))
-      
+
       panStartRef.current = { x: centerX, y: centerY }
     }
   }
@@ -480,30 +555,6 @@ const Canvas = () => {
     }
   }
 
-  // Mouse wheel para zoom
-  const handleWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
-    e.preventDefault()
-    const canvas = canvasRef.current
-    if (!canvas) return
-
-    const rect = canvas.getBoundingClientRect()
-    const mouseX = e.clientX - rect.left
-    const mouseY = e.clientY - rect.top
-
-    const delta = e.deltaY > 0 ? 0.9 : 1.1
-    const newScale = Math.max(0.5, Math.min(5, scale * delta))
-
-    // Ajustar offset para zoom centrado no mouse
-    const worldX = (mouseX - offset.x) / scale
-    const worldY = (mouseY - offset.y) / scale
-
-    setOffset({
-      x: mouseX - worldX * newScale,
-      y: mouseY - worldY * newScale
-    })
-    setScale(newScale)
-  }
-
   const clearCanvas = () => {
     const canvas = canvasRef.current
     if (!canvas) return
@@ -511,11 +562,15 @@ const Canvas = () => {
     const ctx = canvas.getContext('2d')
     if (!ctx) return
 
+    // Limpar histórico de pixels
+    pixelHistoryRef.current.clear()
+
+    // Redesenhar (apenas grid)
     ctx.save()
     ctx.setTransform(1, 0, 0, 1, 0, 0)
     ctx.clearRect(0, 0, canvas.width, canvas.height)
     ctx.restore()
-    drawGrid()
+    redrawCanvas()
   }
 
   const handleClearCanvas = () => {
@@ -556,7 +611,6 @@ const Canvas = () => {
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
-        onWheel={handleWheel}
         className="absolute inset-0 w-full h-full bg-white cursor-crosshair touch-none"
       />
 
