@@ -6,20 +6,23 @@ import Ably from 'ably'
 interface DrawData {
   x: number
   y: number
-  prevX: number
-  prevY: number
   color: string
-  lineWidth: number
   userId: string
   isEraser?: boolean
+}
+
+interface PixelBatch {
+  pixels: DrawData[]
+  userId: string
 }
 
 const Canvas = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const [isDrawing, setIsDrawing] = useState(false)
   const [color, setColor] = useState('#000000')
-  const [lineWidth, setLineWidth] = useState(2)
+  const pixelSize = 15 // Tamanho fixo
   const [isEraser, setIsEraser] = useState(false)
+  const [colorHistory, setColorHistory] = useState<string[]>(['#FF0000', '#00FF00', '#0000FF', '#FFFF00'])
   const [userId] = useState(() => Math.random().toString(36).substr(2, 9))
   const [connected, setConnected] = useState(false)
   const [userCount, setUserCount] = useState(1)
@@ -28,6 +31,9 @@ const Canvas = () => {
   const lastPosition = useRef<{ x: number; y: number } | null>(null)
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 })
+  const pixelBatchRef = useRef<DrawData[]>([])
+  const batchTimerRef = useRef<NodeJS.Timeout | null>(null)
+  const drawnPixelsRef = useRef<Set<string>>(new Set())
 
   // Ajustar tamanho do canvas para tela cheia
   useEffect(() => {
@@ -43,6 +49,32 @@ const Canvas = () => {
 
     return () => window.removeEventListener('resize', updateCanvasSize)
   }, [])
+
+  // Enviar batch de pixels agrupados
+  const sendPixelBatch = () => {
+    if (pixelBatchRef.current.length === 0) return
+
+    if (channelRef.current) {
+      channelRef.current.publish('pixel-batch', {
+        pixels: pixelBatchRef.current,
+        userId,
+      })
+    }
+
+    pixelBatchRef.current = []
+    drawnPixelsRef.current.clear()
+  }
+
+  // Agendar envio do batch
+  const scheduleBatchSend = () => {
+    if (batchTimerRef.current) {
+      clearTimeout(batchTimerRef.current)
+    }
+
+    batchTimerRef.current = setTimeout(() => {
+      sendPixelBatch()
+    }, 100) // Envia a cada 100ms
+  }
 
   // Carregar estado do canvas do backend
   const loadCanvasState = async () => {
@@ -133,11 +165,21 @@ const Canvas = () => {
     const channel = ably.channels.get('canvas-draw')
     channelRef.current = channel
 
-    // Escutar eventos de desenho de outros usuários
+    // Escutar eventos de desenho de outros usuários (pixels individuais - retrocompatibilidade)
     channel.subscribe('draw', (message) => {
       const data = message.data as DrawData
       if (data.userId !== userId) {
-        drawLine(data.prevX, data.prevY, data.x, data.y, data.color, data.lineWidth, data.isEraser || false)
+        drawPixel(data.x, data.y, data.color, data.isEraser || false)
+      }
+    })
+
+    // Escutar batches de pixels
+    channel.subscribe('pixel-batch', (message) => {
+      const batch = message.data as PixelBatch
+      if (batch.userId !== userId) {
+        batch.pixels.forEach(pixel => {
+          drawPixel(pixel.x, pixel.y, pixel.color, pixel.isEraser || false)
+        })
       }
     })
 
@@ -173,13 +215,10 @@ const Canvas = () => {
     }
   }, [userId])
 
-  const drawLine = (
-    x1: number,
-    y1: number,
-    x2: number,
-    y2: number,
-    strokeColor: string,
-    strokeWidth: number,
+  const drawPixel = (
+    x: number,
+    y: number,
+    pixelColor: string,
     eraser: boolean = false
   ) => {
     const canvas = canvasRef.current
@@ -188,24 +227,21 @@ const Canvas = () => {
     const ctx = canvas.getContext('2d')
     if (!ctx) return
 
-    ctx.beginPath()
-    ctx.moveTo(x1, y1)
-    ctx.lineTo(x2, y2)
+    // Calcular posição do pixel no grid
+    const pixelX = Math.floor(x / pixelSize) * pixelSize
+    const pixelY = Math.floor(y / pixelSize) * pixelSize
 
     if (eraser) {
-      ctx.globalCompositeOperation = 'destination-out'
-      ctx.strokeStyle = 'rgba(0,0,0,1)'
+      ctx.clearRect(pixelX, pixelY, pixelSize, pixelSize)
     } else {
-      ctx.globalCompositeOperation = 'source-over'
-      ctx.strokeStyle = strokeColor
+      ctx.fillStyle = pixelColor
+      ctx.fillRect(pixelX, pixelY, pixelSize, pixelSize)
     }
 
-    ctx.lineWidth = strokeWidth
-    ctx.lineCap = 'round'
-    ctx.stroke()
-
-    // Resetar para modo normal
-    ctx.globalCompositeOperation = 'source-over'
+    // Desenhar grid (opcional)
+    ctx.strokeStyle = 'rgba(200, 200, 200, 0.3)'
+    ctx.lineWidth = 0.5
+    ctx.strokeRect(pixelX, pixelY, pixelSize, pixelSize)
   }
 
   const startDrawing = (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -214,14 +250,23 @@ const Canvas = () => {
     if (!canvas) return
 
     const rect = canvas.getBoundingClientRect()
-    lastPosition.current = {
-      x: e.clientX - rect.left,
-      y: e.clientY - rect.top,
+    const x = e.clientX - rect.left
+    const y = e.clientY - rect.top
+
+    // Desenhar pixel imediatamente ao clicar
+    drawPixel(x, y, color, isEraser)
+
+    // Adicionar ao batch
+    const pixelKey = `${Math.floor(x / pixelSize)},${Math.floor(y / pixelSize)}`
+    if (!drawnPixelsRef.current.has(pixelKey)) {
+      pixelBatchRef.current.push({ x, y, color, userId, isEraser })
+      drawnPixelsRef.current.add(pixelKey)
+      scheduleBatchSend()
     }
   }
 
   const draw = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!isDrawing || !lastPosition.current) return
+    if (!isDrawing) return
 
     const canvas = canvasRef.current
     if (!canvas) return
@@ -230,28 +275,24 @@ const Canvas = () => {
     const x = e.clientX - rect.left
     const y = e.clientY - rect.top
 
-    drawLine(lastPosition.current.x, lastPosition.current.y, x, y, color, lineWidth, isEraser)
+    drawPixel(x, y, color, isEraser)
 
-    // Publicar evento de desenho para outros usuários
-    if (channelRef.current) {
-      channelRef.current.publish('draw', {
-        x,
-        y,
-        prevX: lastPosition.current.x,
-        prevY: lastPosition.current.y,
-        color,
-        lineWidth,
-        userId,
-        isEraser,
-      })
+    // Adicionar ao batch (evitando duplicatas)
+    const pixelKey = `${Math.floor(x / pixelSize)},${Math.floor(y / pixelSize)}`
+    if (!drawnPixelsRef.current.has(pixelKey)) {
+      pixelBatchRef.current.push({ x, y, color, userId, isEraser })
+      drawnPixelsRef.current.add(pixelKey)
+      scheduleBatchSend()
     }
-
-    lastPosition.current = { x, y }
   }
 
   const stopDrawing = () => {
     setIsDrawing(false)
-    lastPosition.current = null
+    // Enviar último batch imediatamente
+    if (batchTimerRef.current) {
+      clearTimeout(batchTimerRef.current)
+    }
+    sendPixelBatch()
     // Salvar estado do canvas após desenhar
     debouncedSave()
   }
@@ -278,6 +319,18 @@ const Canvas = () => {
     saveCanvasState()
   }
 
+  // Atualizar cor e histórico
+  const handleColorChange = (newColor: string) => {
+    setColor(newColor)
+    setIsEraser(false) // Desativar borracha ao selecionar cor
+
+    // Atualizar histórico (remover se já existe e adicionar no início)
+    setColorHistory(prev => {
+      const filtered = prev.filter(c => c !== newColor)
+      return [newColor, ...filtered].slice(0, 4)
+    })
+  }
+
   return (
     <div className="fixed inset-0 w-screen h-screen overflow-hidden">
       {/* Canvas em tela cheia */}
@@ -295,35 +348,31 @@ const Canvas = () => {
       {/* Controles flutuantes na parte inferior */}
       <div className="absolute bottom-8 left-1/2 transform -translate-x-1/2 z-10">
         <div className="flex items-center gap-4 px-6 py-4 bg-white dark:bg-gray-900 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 backdrop-blur-sm bg-opacity-95">
-          <div className="flex items-center gap-2">
-            <label htmlFor="color" className="font-medium text-sm">
+          <div className="flex items-center gap-3">
+            <label className="font-medium text-sm">
               Cor:
             </label>
             <input
-              id="color"
               type="color"
               value={color}
-              onChange={(e) => setColor(e.target.value)}
+              onChange={(e) => handleColorChange(e.target.value)}
               className="w-10 h-10 cursor-pointer rounded-lg border-2 border-gray-300"
             />
-          </div>
-
-          <div className="h-8 w-px bg-gray-300 dark:bg-gray-600" />
-
-          <div className="flex items-center gap-2">
-            <label htmlFor="lineWidth" className="font-medium text-sm">
-              Espessura:
-            </label>
-            <input
-              id="lineWidth"
-              type="range"
-              min="1"
-              max="20"
-              value={lineWidth}
-              onChange={(e) => setLineWidth(Number(e.target.value))}
-              className="w-24"
-            />
-            <span className="text-sm w-8 font-medium">{lineWidth}px</span>
+            {/* Histórico de cores */}
+            <div className="flex gap-1">
+              {colorHistory.map((histColor, index) => (
+                <button
+                  key={index}
+                  onClick={() => handleColorChange(histColor)}
+                  className={`w-8 h-8 rounded-md border-2 transition-all hover:scale-110 ${color === histColor && !isEraser
+                      ? 'border-blue-500 ring-2 ring-blue-300'
+                      : 'border-gray-300'
+                    }`}
+                  style={{ backgroundColor: histColor }}
+                  title={histColor}
+                />
+              ))}
+            </div>
           </div>
 
           <div className="h-8 w-px bg-gray-300 dark:bg-gray-600" />
@@ -332,8 +381,8 @@ const Canvas = () => {
             <button
               onClick={() => setIsEraser(false)}
               className={`px-4 py-2 rounded-lg font-medium transition-all ${!isEraser
-                  ? 'bg-blue-500 text-white shadow-md'
-                  : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
+                ? 'bg-blue-500 text-white shadow-md'
+                : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
                 }`}
             >
               ✏️ Pincel
@@ -341,8 +390,8 @@ const Canvas = () => {
             <button
               onClick={() => setIsEraser(true)}
               className={`px-4 py-2 rounded-lg font-medium transition-all ${isEraser
-                  ? 'bg-blue-500 text-white shadow-md'
-                  : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
+                ? 'bg-blue-500 text-white shadow-md'
+                : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
                 }`}
             >
               ⬜ Borracha
