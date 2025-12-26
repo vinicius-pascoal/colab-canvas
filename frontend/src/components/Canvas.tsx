@@ -11,6 +11,7 @@ interface DrawData {
   color: string
   lineWidth: number
   userId: string
+  isEraser?: boolean
 }
 
 const Canvas = () => {
@@ -18,6 +19,7 @@ const Canvas = () => {
   const [isDrawing, setIsDrawing] = useState(false)
   const [color, setColor] = useState('#000000')
   const [lineWidth, setLineWidth] = useState(2)
+  const [isEraser, setIsEraser] = useState(false)
   const [userId] = useState(() => Math.random().toString(36).substr(2, 9))
   const [connected, setConnected] = useState(false)
   const [userCount, setUserCount] = useState(1)
@@ -25,6 +27,22 @@ const Canvas = () => {
   const channelRef = useRef<Ably.Types.RealtimeChannelCallbacks | null>(null)
   const lastPosition = useRef<{ x: number; y: number } | null>(null)
   const saveTimeoutRef = useRef<NodeJS.Timeout | null>(null)
+  const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 })
+
+  // Ajustar tamanho do canvas para tela cheia
+  useEffect(() => {
+    const updateCanvasSize = () => {
+      setCanvasSize({
+        width: window.innerWidth,
+        height: window.innerHeight,
+      })
+    }
+
+    updateCanvasSize()
+    window.addEventListener('resize', updateCanvasSize)
+
+    return () => window.removeEventListener('resize', updateCanvasSize)
+  }, [])
 
   // Carregar estado do canvas do backend
   const loadCanvasState = async () => {
@@ -119,7 +137,7 @@ const Canvas = () => {
     channel.subscribe('draw', (message) => {
       const data = message.data as DrawData
       if (data.userId !== userId) {
-        drawLine(data.prevX, data.prevY, data.x, data.y, data.color, data.lineWidth)
+        drawLine(data.prevX, data.prevY, data.x, data.y, data.color, data.lineWidth, data.isEraser || false)
       }
     })
 
@@ -161,7 +179,8 @@ const Canvas = () => {
     x2: number,
     y2: number,
     strokeColor: string,
-    strokeWidth: number
+    strokeWidth: number,
+    eraser: boolean = false
   ) => {
     const canvas = canvasRef.current
     if (!canvas) return
@@ -172,10 +191,21 @@ const Canvas = () => {
     ctx.beginPath()
     ctx.moveTo(x1, y1)
     ctx.lineTo(x2, y2)
-    ctx.strokeStyle = strokeColor
+    
+    if (eraser) {
+      ctx.globalCompositeOperation = 'destination-out'
+      ctx.strokeStyle = 'rgba(0,0,0,1)'
+    } else {
+      ctx.globalCompositeOperation = 'source-over'
+      ctx.strokeStyle = strokeColor
+    }
+    
     ctx.lineWidth = strokeWidth
     ctx.lineCap = 'round'
     ctx.stroke()
+    
+    // Resetar para modo normal
+    ctx.globalCompositeOperation = 'source-over'
   }
 
   const startDrawing = (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -200,7 +230,7 @@ const Canvas = () => {
     const x = e.clientX - rect.left
     const y = e.clientY - rect.top
 
-    drawLine(lastPosition.current.x, lastPosition.current.y, x, y, color, lineWidth)
+    drawLine(lastPosition.current.x, lastPosition.current.y, x, y, color, lineWidth, isEraser)
 
     // Publicar evento de desenho para outros usuários
     if (channelRef.current) {
@@ -212,6 +242,7 @@ const Canvas = () => {
         color,
         lineWidth,
         userId,
+        isEraser,
       })
     }
 
@@ -248,71 +279,95 @@ const Canvas = () => {
   }
 
   return (
-    <div className="flex flex-col items-center gap-4">
-      <div className="flex items-center gap-4 p-4 bg-gray-100 dark:bg-gray-800 rounded-lg w-full">
-        <div className="flex items-center gap-2">
-          <label htmlFor="color" className="font-medium">
-            Cor:
-          </label>
-          <input
-            id="color"
-            type="color"
-            value={color}
-            onChange={(e) => setColor(e.target.value)}
-            className="w-12 h-10 cursor-pointer rounded border-2 border-gray-300"
-          />
-        </div>
+    <div className="fixed inset-0 w-screen h-screen overflow-hidden">
+      {/* Canvas em tela cheia */}
+      <canvas
+        ref={canvasRef}
+        width={canvasSize.width}
+        height={canvasSize.height}
+        onMouseDown={startDrawing}
+        onMouseMove={draw}
+        onMouseUp={stopDrawing}
+        onMouseLeave={stopDrawing}
+        className="absolute inset-0 w-full h-full bg-white cursor-crosshair"
+      />
 
-        <div className="flex items-center gap-2">
-          <label htmlFor="lineWidth" className="font-medium">
-            Espessura:
-          </label>
-          <input
-            id="lineWidth"
-            type="range"
-            min="1"
-            max="20"
-            value={lineWidth}
-            onChange={(e) => setLineWidth(Number(e.target.value))}
-            className="w-32"
-          />
-          <span className="text-sm w-8">{lineWidth}px</span>
-        </div>
-
-        <button
-          onClick={handleClearCanvas}
-          className="px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded-lg font-medium transition-colors"
-        >
-          Limpar
-        </button>
-
-        <div className="ml-auto flex items-center gap-4">
+      {/* Controles flutuantes na parte inferior */}
+      <div className="absolute bottom-8 left-1/2 transform -translate-x-1/2 z-10">
+        <div className="flex items-center gap-4 px-6 py-4 bg-white dark:bg-gray-900 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 backdrop-blur-sm bg-opacity-95">
           <div className="flex items-center gap-2">
-            <div
-              className={`w-3 h-3 rounded-full ${connected ? 'bg-green-500' : 'bg-red-500'
-                }`}
+            <label htmlFor="color" className="font-medium text-sm">
+              Cor:
+            </label>
+            <input
+              id="color"
+              type="color"
+              value={color}
+              onChange={(e) => setColor(e.target.value)}
+              className="w-10 h-10 cursor-pointer rounded-lg border-2 border-gray-300"
             />
-            <span className="text-sm font-medium">
-              {connected ? 'Conectado' : 'Desconectado'}
+          </div>
+
+          <div className="h-8 w-px bg-gray-300 dark:bg-gray-600" />
+
+          <div className="flex items-center gap-2">
+            <label htmlFor="lineWidth" className="font-medium text-sm">
+              Espessura:
+            </label>
+            <input
+              id="lineWidth"
+              type="range"
+              min="1"
+              max="20"
+              value={lineWidth}
+              onChange={(e) => setLineWidth(Number(e.target.value))}
+              className="w-24"
+            />
+            <span className="text-sm w-8 font-medium">{lineWidth}px</span>
+          </div>
+
+          <div className="h-8 w-px bg-gray-300 dark:bg-gray-600" />
+
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setIsEraser(false)}
+              className={`px-4 py-2 rounded-lg font-medium transition-all ${
+                !isEraser
+                  ? 'bg-blue-500 text-white shadow-md'
+                  : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
+              }`}
+            >
+              ✏️ Pincel
+            </button>
+            <button
+              onClick={() => setIsEraser(true)}
+              className={`px-4 py-2 rounded-lg font-medium transition-all ${
+                isEraser
+                  ? 'bg-blue-500 text-white shadow-md'
+                  : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
+              }`}
+            >
+              ⬜ Borracha
+            </button>
+          </div>
+
+          <div className="h-8 w-px bg-gray-300 dark:bg-gray-600" />
+
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2">
+              <div
+                className={`w-2.5 h-2.5 rounded-full ${connected ? 'bg-green-500' : 'bg-red-500'
+                  }`}
+              />
+              <span className="text-xs font-medium">
+                {connected ? 'Online' : 'Offline'}
+              </span>
+            </div>
+            <span className="text-xs font-medium">
+              👥 {userCount}
             </span>
           </div>
-          <span className="text-sm font-medium">
-            👥 {userCount} {userCount === 1 ? 'usuário' : 'usuários'}
-          </span>
         </div>
-      </div>
-
-      <div className="border-4 border-gray-300 dark:border-gray-600 rounded-lg shadow-lg">
-        <canvas
-          ref={canvasRef}
-          width={1200}
-          height={700}
-          onMouseDown={startDrawing}
-          onMouseMove={draw}
-          onMouseUp={stopDrawing}
-          onMouseLeave={stopDrawing}
-          className="bg-white cursor-crosshair rounded-lg"
-        />
       </div>
     </div>
   )
