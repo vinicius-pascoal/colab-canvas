@@ -42,22 +42,29 @@ const Canvas = () => {
   const [offset, setOffset] = useState({ x: 0, y: 0 })
   const [scale, setScale] = useState(1)
   const [isPanning, setIsPanning] = useState(false)
+  const [panMode, setPanMode] = useState(false) // Modo pan para mobile
   const panStartRef = useRef({ x: 0, y: 0 })
   const lastTouchDistance = useRef<number | null>(null)
 
-  // Ajustar tamanho do canvas para tela cheia
+  // Tamanho fixo do canvas
   useEffect(() => {
-    const updateCanvasSize = () => {
-      setCanvasSize({
-        width: window.innerWidth,
-        height: window.innerHeight,
+    setCanvasSize({
+      width: 1920,
+      height: 1080,
+    })
+
+    // Centralizar canvas na primeira vez (mobile)
+    if (window.innerWidth < 1920 || window.innerHeight < 1080) {
+      const initialScale = Math.min(
+        window.innerWidth / 1920,
+        window.innerHeight / 1080
+      ) * 0.9
+      setScale(initialScale)
+      setOffset({
+        x: (window.innerWidth - 1920 * initialScale) / 2,
+        y: (window.innerHeight - 1080 * initialScale) / 2
       })
     }
-
-    updateCanvasSize()
-    window.addEventListener('resize', updateCanvasSize)
-
-    return () => window.removeEventListener('resize', updateCanvasSize)
   }, [])
 
   // Desenhar grid quando canvas for criado ou redimensionado
@@ -450,23 +457,29 @@ const Canvas = () => {
     if (!canvas) return
 
     if (e.touches.length === 1) {
-      // Um dedo - desenhar
       const touch = e.touches[0]
       const rect = canvas.getBoundingClientRect()
       const clientX = touch.clientX - rect.left
       const clientY = touch.clientY - rect.top
 
-      const x = (clientX - offset.x) / scale
-      const y = (clientY - offset.y) / scale
+      if (panMode) {
+        // Modo pan - arrastar com um dedo
+        setIsPanning(true)
+        panStartRef.current = { x: clientX, y: clientY }
+      } else {
+        // Modo desenho - um dedo desenha
+        const x = (clientX - offset.x) / scale
+        const y = (clientY - offset.y) / scale
 
-      setIsDrawing(true)
-      drawPixel(x, y, color, isEraser)
+        setIsDrawing(true)
+        drawPixel(x, y, color, isEraser)
 
-      const pixelKey = `${Math.floor(x / pixelSize)},${Math.floor(y / pixelSize)}`
-      if (!drawnPixelsRef.current.has(pixelKey)) {
-        pixelBatchRef.current.push({ x, y, color, userId, isEraser })
-        drawnPixelsRef.current.add(pixelKey)
-        scheduleBatchSend()
+        const pixelKey = `${Math.floor(x / pixelSize)},${Math.floor(y / pixelSize)}`
+        if (!drawnPixelsRef.current.has(pixelKey)) {
+          pixelBatchRef.current.push({ x, y, color, userId, isEraser })
+          drawnPixelsRef.current.add(pixelKey)
+          scheduleBatchSend()
+        }
       }
     } else if (e.touches.length === 2) {
       // Dois dedos - preparar para zoom/pan
@@ -492,204 +505,226 @@ const Canvas = () => {
     const canvas = canvasRef.current
     if (!canvas) return
 
-    if (e.touches.length === 1 && isDrawing && !isPanning) {
-      // Um dedo - desenhar
+    if (e.touches.length === 1) {
       const touch = e.touches[0]
       const rect = canvas.getBoundingClientRect()
       const clientX = touch.clientX - rect.left
       const clientY = touch.clientY - rect.top
 
-      const x = (clientX - offset.x) / scale
-      const y = (clientY - offset.y) / scale
+      if (isPanning && panMode) {
+        // Pan com um dedo
+        const dx = clientX - panStartRef.current.x
+        const dy = clientY - panStartRef.current.y
 
-      drawPixel(x, y, color, isEraser)
+        setOffset(prev => ({
+          x: prev.x + dx,
+          y: prev.y + dy
+        }))
 
-      const pixelKey = `${Math.floor(x / pixelSize)},${Math.floor(y / pixelSize)}`
-      if (!drawnPixelsRef.current.has(pixelKey)) {
-        pixelBatchRef.current.push({ x, y, color, userId, isEraser })
-        drawnPixelsRef.current.add(pixelKey)
-        scheduleBatchSend()
+        panStartRef.current = { x: clientX, y: clientY }
+      } else if (isDrawing && !isPanning) {
+        // Desenhar
+
+        const x = (clientX - offset.x) / scale
+        const y = (clientY - offset.y) / scale
+
+        drawPixel(x, y, color, isEraser)
+
+        const pixelKey = `${Math.floor(x / pixelSize)},${Math.floor(y / pixelSize)}`
+        if (!drawnPixelsRef.current.has(pixelKey)) {
+          pixelBatchRef.current.push({ x, y, color, userId, isEraser })
+          drawnPixelsRef.current.add(pixelKey)
+          scheduleBatchSend()
+        }
+      } else if (e.touches.length === 2) {
+        // Dois dedos - zoom e pan
+        const touch1 = e.touches[0]
+        const touch2 = e.touches[1]
+
+        // Zoom
+        const distance = Math.hypot(
+          touch2.clientX - touch1.clientX,
+          touch2.clientY - touch1.clientY
+        )
+
+        if (lastTouchDistance.current) {
+          const delta = distance - lastTouchDistance.current
+          const newScale = Math.max(0.5, Math.min(5, scale + delta * 0.01))
+          setScale(newScale)
+        }
+        lastTouchDistance.current = distance
+
+        // Pan
+        const centerX = (touch1.clientX + touch2.clientX) / 2
+        const centerY = (touch1.clientY + touch2.clientY) / 2
+
+        const dx = centerX - panStartRef.current.x
+        const dy = centerY - panStartRef.current.y
+
+        setOffset(prev => ({
+          x: prev.x + dx,
+          y: prev.y + dy
+        }))
+
+        panStartRef.current = { x: centerX, y: centerY }
       }
-    } else if (e.touches.length === 2) {
-      // Dois dedos - zoom e pan
-      const touch1 = e.touches[0]
-      const touch2 = e.touches[1]
+    }
 
-      // Zoom
-      const distance = Math.hypot(
-        touch2.clientX - touch1.clientX,
-        touch2.clientY - touch1.clientY
-      )
-
-      if (lastTouchDistance.current) {
-        const delta = distance - lastTouchDistance.current
-        const newScale = Math.max(0.5, Math.min(5, scale + delta * 0.01))
-        setScale(newScale)
+    const handleTouchEnd = (e: React.TouchEvent<HTMLCanvasElement>) => {
+      e.preventDefault()
+      if (e.touches.length === 0) {
+        stopDrawing()
+        lastTouchDistance.current = null
+      } else if (e.touches.length === 1) {
+        lastTouchDistance.current = null
+        setIsPanning(false)
       }
-      lastTouchDistance.current = distance
-
-      // Pan
-      const centerX = (touch1.clientX + touch2.clientX) / 2
-      const centerY = (touch1.clientY + touch2.clientY) / 2
-
-      const dx = centerX - panStartRef.current.x
-      const dy = centerY - panStartRef.current.y
-
-      setOffset(prev => ({
-        x: prev.x + dx,
-        y: prev.y + dy
-      }))
-
-      panStartRef.current = { x: centerX, y: centerY }
-    }
-  }
-
-  const handleTouchEnd = (e: React.TouchEvent<HTMLCanvasElement>) => {
-    e.preventDefault()
-    if (e.touches.length === 0) {
-      stopDrawing()
-      lastTouchDistance.current = null
-    } else if (e.touches.length === 1) {
-      lastTouchDistance.current = null
-      setIsPanning(false)
-    }
-  }
-
-  const clearCanvas = () => {
-    const canvas = canvasRef.current
-    if (!canvas) return
-
-    const ctx = canvas.getContext('2d')
-    if (!ctx) return
-
-    // Limpar histórico de pixels
-    pixelHistoryRef.current.clear()
-
-    // Redesenhar (apenas grid)
-    ctx.save()
-    ctx.setTransform(1, 0, 0, 1, 0, 0)
-    ctx.clearRect(0, 0, canvas.width, canvas.height)
-    ctx.restore()
-    redrawCanvas()
-  }
-
-  const handleClearCanvas = () => {
-    clearCanvas()
-
-    // Publicar evento de limpar para outros usuários
-    if (channelRef.current) {
-      channelRef.current.publish('clear', { userId })
     }
 
-    // Salvar canvas limpo
-    saveCanvasState()
-  }
+    const clearCanvas = () => {
+      const canvas = canvasRef.current
+      if (!canvas) return
 
-  // Atualizar cor e histórico
-  const handleColorChange = (newColor: string) => {
-    setColor(newColor)
-    setIsEraser(false) // Desativar borracha ao selecionar cor
+      const ctx = canvas.getContext('2d')
+      if (!ctx) return
 
-    // Atualizar histórico (remover se já existe e adicionar no início)
-    setColorHistory(prev => {
-      const filtered = prev.filter(c => c !== newColor)
-      return [newColor, ...filtered].slice(0, 4)
-    })
-  }
+      // Limpar histórico de pixels
+      pixelHistoryRef.current.clear()
 
-  return (
-    <div className="fixed inset-0 w-screen h-screen overflow-hidden">
-      {/* Canvas em tela cheia */}
-      <canvas
-        ref={canvasRef}
-        width={canvasSize.width}
-        height={canvasSize.height}
-        onMouseDown={startDrawing}
-        onMouseMove={draw}
-        onMouseUp={stopDrawing}
-        onMouseLeave={stopDrawing}
-        onTouchStart={handleTouchStart}
-        onTouchMove={handleTouchMove}
-        onTouchEnd={handleTouchEnd}
-        className="absolute inset-0 w-full h-full bg-white cursor-crosshair touch-none"
-      />
+      // Redesenhar (apenas grid)
+      ctx.save()
+      ctx.setTransform(1, 0, 0, 1, 0, 0)
+      ctx.clearRect(0, 0, canvas.width, canvas.height)
+      ctx.restore()
+      redrawCanvas()
+    }
 
-      {/* Controles flutuantes na parte inferior */}
-      <div className="absolute bottom-4 md:bottom-8 left-1/2 transform -translate-x-1/2 z-10 max-w-[95vw]">
-        <div className="flex flex-col md:flex-row items-center gap-2 md:gap-4 px-3 md:px-6 py-3 md:py-4 bg-white dark:bg-gray-900 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 backdrop-blur-sm bg-opacity-95">
-          <div className="flex items-center gap-2 md:gap-3 w-full md:w-auto justify-center">
-            <label className="font-medium text-xs md:text-sm">
-              Cor:
-            </label>
-            <input
-              type="color"
-              value={color}
-              onChange={(e) => handleColorChange(e.target.value)}
-              className="w-8 h-8 md:w-10 md:h-10 cursor-pointer rounded-lg border-2 border-gray-300"
-            />
-            {/* Histórico de cores */}
-            <div className="flex gap-1">
-              {colorHistory.map((histColor, index) => (
-                <button
-                  key={index}
-                  onClick={() => handleColorChange(histColor)}
-                  className={`w-7 h-7 md:w-8 md:h-8 rounded-md border-2 transition-all hover:scale-110 ${color === histColor && !isEraser
-                    ? 'border-blue-500 ring-2 ring-blue-300'
-                    : 'border-gray-300'
-                    }`}
-                  style={{ backgroundColor: histColor }}
-                  title={histColor}
-                />
-              ))}
-            </div>
-          </div>
+    const handleClearCanvas = () => {
+      clearCanvas()
 
-          <div className="hidden md:block h-8 w-px bg-gray-300 dark:bg-gray-600" />
+      // Publicar evento de limpar para outros usuários
+      if (channelRef.current) {
+        channelRef.current.publish('clear', { userId })
+      }
 
-          <div className="flex items-center gap-2 w-full md:w-auto justify-center">
-            <button
-              onClick={() => setIsEraser(false)}
-              className={`px-3 md:px-4 py-2 rounded-lg font-medium text-xs md:text-base transition-all ${!isEraser
-                ? 'bg-blue-500 text-white shadow-md'
-                : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
-                }`}
-            >
-              ✏️ Pincel
-            </button>
-            <button
-              onClick={() => setIsEraser(true)}
-              className={`px-3 md:px-4 py-2 rounded-lg font-medium text-xs md:text-base transition-all ${isEraser
-                ? 'bg-blue-500 text-white shadow-md'
-                : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
-                }`}
-            >
-              ⬜ Borracha
-            </button>
-          </div>
+      // Salvar canvas limpo
+      saveCanvasState()
+    }
 
-          <div className="hidden md:block h-8 w-px bg-gray-300 dark:bg-gray-600" />
+    // Atualizar cor e histórico
+    const handleColorChange = (newColor: string) => {
+      setColor(newColor)
+      setIsEraser(false) // Desativar borracha ao selecionar cor
 
-          <div className="flex items-center gap-3 md:gap-4 w-full md:w-auto justify-center">
-            <div className="flex items-center gap-2">
-              <div
-                className={`w-2 h-2 md:w-2.5 md:h-2.5 rounded-full ${connected ? 'bg-green-500' : 'bg-red-500'
-                  }`}
+      // Atualizar histórico (remover se já existe e adicionar no início)
+      setColorHistory(prev => {
+        const filtered = prev.filter(c => c !== newColor)
+        return [newColor, ...filtered].slice(0, 4)
+      })
+    }
+
+    return (
+      <div className="fixed inset-0 w-screen h-screen overflow-hidden">
+        {/* Canvas em tela cheia */}
+        <canvas
+          ref={canvasRef}
+          width={canvasSize.width}
+          height={canvasSize.height}
+          onMouseDown={startDrawing}
+          onMouseMove={draw}
+          onMouseUp={stopDrawing}
+          onMouseLeave={stopDrawing}
+          onTouchStart={handleTouchStart}
+          onTouchMove={handleTouchMove}
+          onTouchEnd={handleTouchEnd}
+          className="absolute inset-0 w-full h-full bg-white cursor-crosshair touch-none"
+        />
+
+        {/* Controles flutuantes na parte inferior */}
+        <div className="absolute bottom-4 md:bottom-8 left-1/2 transform -translate-x-1/2 z-10 max-w-[95vw]">
+          <div className="flex flex-col md:flex-row items-center gap-2 md:gap-4 px-3 md:px-6 py-3 md:py-4 bg-white dark:bg-gray-900 rounded-2xl shadow-2xl border border-gray-200 dark:border-gray-700 backdrop-blur-sm bg-opacity-95">
+            <div className="flex items-center gap-2 md:gap-3 w-full md:w-auto justify-center">
+              <label className="font-medium text-xs md:text-sm">
+                Cor:
+              </label>
+              <input
+                type="color"
+                value={color}
+                onChange={(e) => handleColorChange(e.target.value)}
+                className="w-8 h-8 md:w-10 md:h-10 cursor-pointer rounded-lg border-2 border-gray-300"
               />
+              {/* Histórico de cores */}
+              <div className="flex gap-1">
+                {colorHistory.map((histColor, index) => (
+                  <button
+                    key={index}
+                    onClick={() => handleColorChange(histColor)}
+                    className={`w-7 h-7 md:w-8 md:h-8 rounded-md border-2 transition-all hover:scale-110 ${color === histColor && !isEraser
+                      ? 'border-blue-500 ring-2 ring-blue-300'
+                      : 'border-gray-300'
+                      }`}
+                    style={{ backgroundColor: histColor }}
+                    title={histColor}
+                  />
+                ))}
+              </div>
+            </div>
+
+            <div className="hidden md:block h-8 w-px bg-gray-300 dark:bg-gray-600" />
+
+            <div className="flex items-center gap-2 w-full md:w-auto justify-center">
+              <button
+                onClick={() => { setIsEraser(false); setPanMode(false); }}
+                className={`px-3 md:px-4 py-2 rounded-lg font-medium text-xs md:text-base transition-all ${!isEraser && !panMode
+                  ? 'bg-blue-500 text-white shadow-md'
+                  : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
+                  }`}
+              >
+                ✏️ Pincel
+              </button>
+              <button
+                onClick={() => { setIsEraser(true); setPanMode(false); }}
+                className={`px-3 md:px-4 py-2 rounded-lg font-medium text-xs md:text-base transition-all ${isEraser && !panMode
+                  ? 'bg-blue-500 text-white shadow-md'
+                  : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
+                  }`}
+              >
+                ⬜ Borracha
+              </button>
+              <button
+                onClick={() => { setPanMode(!panMode); setIsEraser(false); }}
+                className={`px-3 md:px-4 py-2 rounded-lg font-medium text-xs md:text-base transition-all md:hidden ${panMode
+                  ? 'bg-blue-500 text-white shadow-md'
+                  : 'bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-300 dark:hover:bg-gray-600'
+                  }`}
+              >
+                🖐️ Mover
+              </button>
+            </div>
+
+            <div className="hidden md:block h-8 w-px bg-gray-300 dark:bg-gray-600" />
+
+            <div className="flex items-center gap-3 md:gap-4 w-full md:w-auto justify-center">
+              <div className="flex items-center gap-2">
+                <div
+                  className={`w-2 h-2 md:w-2.5 md:h-2.5 rounded-full ${connected ? 'bg-green-500' : 'bg-red-500'
+                    }`}
+                />
+                <span className="text-xs font-medium">
+                  {connected ? 'Online' : 'Offline'}
+                </span>
+              </div>
               <span className="text-xs font-medium">
-                {connected ? 'Online' : 'Offline'}
+                👥 {userCount}
+              </span>
+              <span className="text-xs font-medium hidden md:inline">
+                🔍 {scale.toFixed(1)}x
               </span>
             </div>
-            <span className="text-xs font-medium">
-              👥 {userCount}
-            </span>
-            <span className="text-xs font-medium hidden md:inline">
-              🔍 {scale.toFixed(1)}x
-            </span>
           </div>
         </div>
       </div>
-    </div>
-  )
-}
+    )
+  }
 
-export default Canvas
+  export default Canvas
