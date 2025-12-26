@@ -40,16 +40,16 @@ app.use(cors({
 }))
 app.use(express.json({ limit: '50mb' }))
 
-// Armazenar estado do canvas em memória (em produção, use Redis ou banco de dados)
-let canvasState: string | null = null
+// Nome do canal Ably para persistência
+const CANVAS_STATE_CHANNEL = 'canvas-state'
 
 // Rotas
 app.get('/health', (req: Request, res: Response) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() })
 })
 
-// Endpoint para salvar o estado do canvas
-app.post('/canvas/save', (req: Request, res: Response) => {
+// Endpoint para salvar o estado do canvas usando Ably
+app.post('/canvas/save', async (req: Request, res: Response) => {
   try {
     const { canvasData } = req.body
 
@@ -57,8 +57,11 @@ app.post('/canvas/save', (req: Request, res: Response) => {
       return res.status(400).json({ error: 'canvasData é obrigatório' })
     }
 
-    canvasState = canvasData
-    console.log('✅ Estado do canvas salvo')
+    // Usar Ably para persistir o estado
+    const channel = ably.channels.get(CANVAS_STATE_CHANNEL)
+    await channel.publish('state', { canvasData, timestamp: new Date().toISOString() })
+
+    console.log('✅ Estado do canvas salvo no Ably')
     res.json({ success: true, timestamp: new Date().toISOString() })
   } catch (error) {
     console.error('Erro ao salvar canvas:', error)
@@ -66,9 +69,26 @@ app.post('/canvas/save', (req: Request, res: Response) => {
   }
 })
 
-// Endpoint para carregar o estado do canvas
-app.get('/canvas/load', (req: Request, res: Response) => {
-  res.json({ canvasData: canvasState, timestamp: new Date().toISOString() })
+// Endpoint para carregar o estado do canvas usando Ably
+app.get('/canvas/load', async (req: Request, res: Response) => {
+  try {
+    // Buscar histórico do canal Ably
+    const channel = ably.channels.get(CANVAS_STATE_CHANNEL)
+    const history = await channel.history({ limit: 1 })
+
+    if (history.items.length > 0) {
+      const latestState = history.items[0].data
+      res.json({
+        canvasData: latestState.canvasData,
+        timestamp: latestState.timestamp
+      })
+    } else {
+      res.json({ canvasData: null, timestamp: new Date().toISOString() })
+    }
+  } catch (error) {
+    console.error('Erro ao carregar canvas:', error)
+    res.json({ canvasData: null, timestamp: new Date().toISOString() })
+  }
 })
 
 // Endpoint para gerar token Ably (opcional, para maior segurança)
