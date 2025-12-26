@@ -20,7 +20,7 @@ const Canvas = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const [isDrawing, setIsDrawing] = useState(false)
   const [color, setColor] = useState('#000000')
-  const pixelSize = 15 // Tamanho fixo
+  const pixelSize = 10 // Tamanho fixo
   const [isEraser, setIsEraser] = useState(false)
   const [colorHistory, setColorHistory] = useState<string[]>(['#FF0000', '#00FF00', '#0000FF', '#FFFF00'])
   const [userId] = useState(() => Math.random().toString(36).substr(2, 9))
@@ -49,6 +49,13 @@ const Canvas = () => {
 
     return () => window.removeEventListener('resize', updateCanvasSize)
   }, [])
+
+  // Desenhar grid quando canvas for criado ou redimensionado
+  useEffect(() => {
+    if (canvasSize.width > 0 && canvasSize.height > 0) {
+      drawGrid()
+    }
+  }, [canvasSize])
 
   // Enviar batch de pixels agrupados
   const sendPixelBatch = () => {
@@ -93,6 +100,7 @@ const Canvas = () => {
         const img = new Image()
         img.onload = () => {
           ctx.drawImage(img, 0, 0)
+          drawGrid()
           console.log('✅ Estado do canvas carregado')
         }
         img.src = data.canvasData
@@ -215,6 +223,34 @@ const Canvas = () => {
     }
   }, [userId])
 
+  // Desenhar grid de fundo
+  const drawGrid = () => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return
+
+    ctx.strokeStyle = 'rgba(200, 200, 200, 0.2)'
+    ctx.lineWidth = 0.5
+
+    // Linhas verticais
+    for (let x = 0; x <= canvas.width; x += pixelSize) {
+      ctx.beginPath()
+      ctx.moveTo(x, 0)
+      ctx.lineTo(x, canvas.height)
+      ctx.stroke()
+    }
+
+    // Linhas horizontais
+    for (let y = 0; y <= canvas.height; y += pixelSize) {
+      ctx.beginPath()
+      ctx.moveTo(0, y)
+      ctx.lineTo(canvas.width, y)
+      ctx.stroke()
+    }
+  }
+
   const drawPixel = (
     x: number,
     y: number,
@@ -233,15 +269,14 @@ const Canvas = () => {
 
     if (eraser) {
       ctx.clearRect(pixelX, pixelY, pixelSize, pixelSize)
+      // Redesenhar grid no pixel apagado
+      ctx.strokeStyle = 'rgba(200, 200, 200, 0.2)'
+      ctx.lineWidth = 0.5
+      ctx.strokeRect(pixelX, pixelY, pixelSize, pixelSize)
     } else {
       ctx.fillStyle = pixelColor
       ctx.fillRect(pixelX, pixelY, pixelSize, pixelSize)
     }
-
-    // Desenhar grid (opcional)
-    ctx.strokeStyle = 'rgba(200, 200, 200, 0.3)'
-    ctx.lineWidth = 0.5
-    ctx.strokeRect(pixelX, pixelY, pixelSize, pixelSize)
   }
 
   const startDrawing = (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -305,6 +340,7 @@ const Canvas = () => {
     if (!ctx) return
 
     ctx.clearRect(0, 0, canvas.width, canvas.height)
+    drawGrid()
   }
 
   const handleClearCanvas = () => {
@@ -365,8 +401,8 @@ const Canvas = () => {
                   key={index}
                   onClick={() => handleColorChange(histColor)}
                   className={`w-8 h-8 rounded-md border-2 transition-all hover:scale-110 ${color === histColor && !isEraser
-                      ? 'border-blue-500 ring-2 ring-blue-300'
-                      : 'border-gray-300'
+                    ? 'border-blue-500 ring-2 ring-blue-300'
+                    : 'border-gray-300'
                     }`}
                   style={{ backgroundColor: histColor }}
                   title={histColor}
