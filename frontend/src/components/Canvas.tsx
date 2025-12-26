@@ -724,7 +724,8 @@ const Canvas = () => {
           </div>
         </div>
       </div>
-    )
-  }
+    </div >
+  )
+}
 
-  export default Canvas
+export default Canvas
