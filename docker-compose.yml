@@ -1,0 +1,44 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: colab-canvas-backend
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      - ABLY_API_KEY=${ABLY_API_KEY}
+      - CORS_ORIGIN=http://localhost:3000
+    volumes:
+      - ./backend:/app
+      - /app/node_modules
+    networks:
+      - colab-canvas-network
+    command: npm run dev
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: colab-canvas-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - NEXT_PUBLIC_ABLY_API_KEY=${ABLY_API_KEY}
+      - NEXT_PUBLIC_API_URL=http://localhost:3001
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+      - /app/.next
+    networks:
+      - colab-canvas-network
+    depends_on:
+      - backend
+    command: npm run dev
+
+networks:
+  colab-canvas-network:
+    driver: bridge
