@@ -214,12 +214,12 @@ const Canvas = () => {
     })
     channel.presence.enter()
     channel.presence.subscribe('enter', () => {
-      channel.presence.get((err: any, members: any[]) => {
+      channel.presence.get((err: Ably.Types.ErrorInfo | null, members?: Ably.Types.PresenceMessage[]) => {
         if (!err && members) setUserCount(members.length)
       })
     })
     channel.presence.subscribe('leave', () => {
-      channel.presence.get((err: any, members: any[]) => {
+      channel.presence.get((err: Ably.Types.ErrorInfo | null, members?: Ably.Types.PresenceMessage[]) => {
         if (!err && members) setUserCount(members.length)
       })
     })
